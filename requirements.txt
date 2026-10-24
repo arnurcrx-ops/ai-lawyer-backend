@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pydantic
+requests
+qdrant-client
+sentence-transformers
+torch
+transformers
+SQLAlchemy
+psycopg2-binary
+python-dotenv
