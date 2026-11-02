@@ -8,11 +8,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# RAG & ML imports
-from qdrant_client import QdrantClient
-from qdrant_client.http import models
-from sentence_transformers import SentenceTransformer
-
 # SQLAlchemy imports
 from sqlalchemy import create_engine, Column, Integer, Text, DateTime
 from sqlalchemy.orm import declarative_base
@@ -23,6 +18,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ai-lawyer-backend")
 
 load_dotenv()
+ENV = os.getenv("ENV", "local").strip().lower()
+
+if ENV != "local":
+    logger.info("RAG disabled for ENV=%s", ENV)
 
 app = FastAPI(title="Kazakhstan Legal Assistant API with RAG & PostgreSQL")
 
@@ -37,7 +36,7 @@ app.add_middleware(
 
 api_key = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "deepseek/deepseek-chat"
+DEFAULT_MODEL = "meta-llama/llama-3.1-8b-instruct"
 
 # --- 1. Database Setup (PostgreSQL with Graceful Degradation) ---
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/ailawyer")
@@ -72,65 +71,73 @@ def save_chat_to_db(user_msg: str, bot_msg: str):
     except Exception as e:
         logger.warning(f"Failed to save chat history to database: {e}")
 
-# --- 2. RAG Setup (In-Memory Qdrant & Sentence Transformers) ---
-logger.info("Loading embedding model (all-MiniLM-L6-v2)...")
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-vector_size = embedding_model.get_sentence_embedding_dimension()
+# --- 2. RAG Setup (local only) ---
+def _initialize_rag():
+    from qdrant_client import QdrantClient
+    from qdrant_client.http import models
+    from sentence_transformers import SentenceTransformer
 
-qdrant_client = QdrantClient(location=":memory:")
-COLLECTION_NAME = "labor_code_rk"
+    logger.info("Loading embedding model (all-MiniLM-L6-v2)...")
+    embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+    vector_size = embedding_model.get_sentence_embedding_dimension()
 
-qdrant_client.recreate_collection(
-    collection_name=COLLECTION_NAME,
-    vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE)
-)
+    qdrant_client = QdrantClient(location=":memory:")
+    COLLECTION_NAME = "labor_code_rk"
 
-# Mock documents from RK legislation
-mock_documents = [
-    {
-        "id": 1,
-        "text": "Статья 113 ТК РК. Порядок и сроки выплаты заработной платы: Заработная плата выплачивается в национальной валюте Республики Казахстан не реже одного раза в месяц в первой декаде следующего месяца. При задержке выплаты зарплаты работодатель выплачивает задолженность и пеню за каждый день просрочки исходя из ставки рефинансирования Национального Банка РК."
-    },
-    {
-        "id": 2,
-        "text": "Статья 52 ТК РК. Основания расторжения трудового договора по инициативе работодателя: Трудовой договор по инициативе работодателя может быть расторгнут в случаях сокращения численности или штата работников, снижения объема производства, несоответствия работника занимаемой должности или повторного нарушения трудовой дисциплины."
-    },
-    {
-        "id": 3,
-        "text": "Статьи 49-50 ТК РК. Прекращение трудового договора: Трудовой договор может быть прекращен по соглашению сторон, истечению срока, расторжению по инициативе одной из сторон. При расторжении по сокращению штата работодатель обязан предупредить работника письменно не менее чем за 1 месяц."
-    },
-    {
-        "id": 4,
-        "text": "Закон РК 'О защите прав потребителей'. Возврат и обмен товаров: Потребитель вправе обменять или вернуть непродовольственный товар надлежащего качества в течение 14 дней, если он не был в употреблении. При обнаружении производственного брака потребитель вправе требовать возврата денег или замены товара."
-    },
-    {
-        "id": 5,
-        "text": "КоАП РК. Обжалование штрафов и ПДД: Предписание о наложении штрафа можно обжаловать в течение 10 суток со дня вручения. При уплате штрафа в течение 7 суток с момента получения (сокращенное производство) сумма штрафа уменьшается на 50%."
-    }
-]
+    qdrant_client.recreate_collection(
+        collection_name=COLLECTION_NAME,
+        vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE)
+    )
 
-# Populate Qdrant in-memory vector db
-doc_texts = [doc["text"] for doc in mock_documents]
-doc_embeddings = embedding_model.encode(doc_texts).tolist()
-
-qdrant_client.upsert(
-    collection_name=COLLECTION_NAME,
-    points=[
-        models.PointStruct(
-            id=doc["id"],
-            vector=embedding,
-            payload={"text": doc["text"]}
-        )
-        for doc, embedding in zip(mock_documents, doc_embeddings)
+    mock_documents = [
+        {
+            "id": 1,
+            "text": "Статья 113 ТК РК. Порядок и сроки выплаты заработной платы: Заработная плата выплачивается в национальной валюте Республики Казахстан не реже одного раза в месяц в первой декаде следующего месяца. При задержке выплаты зарплаты работодатель выплачивает задолженность и пеню за каждый день просрочки исходя из ставки рефинансирования Национального Банка РК."
+        },
+        {
+            "id": 2,
+            "text": "Статья 52 ТК РК. Основания расторжения трудового договора по инициативе работодателя: Трудовой договор по инициативе работодателя может быть расторгнут в случаях сокращения численности или штата работников, снижения объема производства, несоответствия работника занимаемой должности или повторного нарушения трудовой дисциплины."
+        },
+        {
+            "id": 3,
+            "text": "Статьи 49-50 ТК РК. Прекращение трудового договора: Трудовой договор может быть прекращен по соглашению сторон, истечению срока, расторжению по инициативе одной из сторон. При расторжении по сокращению штата работодатель обязан предупредить работника письменно не менее чем за 1 месяц."
+        },
+        {
+            "id": 4,
+            "text": "Закон РК 'О защите прав потребителей'. Возврат и обмен товаров: Потребитель вправе обменять или вернуть непродовольственный товар надлежащего качества в течение 14 дней, если он не был в употреблении. При обнаружении производственного брака потребитель вправе требовать возврата денег или замены товара."
+        },
+        {
+            "id": 5,
+            "text": "КоАП РК. Обжалование штрафов и ПДД: Предписание о наложении штрафа можно обжаловать в течение 10 суток со дня вручения. При уплате штрафа в течение 7 суток с момента получения (сокращенное производство) сумма штрафа уменьшается на 50%."
+        }
     ]
-)
-logger.info("Loaded 5 mock legal documents into in-memory Qdrant RAG.")
+
+    doc_texts = [doc["text"] for doc in mock_documents]
+    doc_embeddings = embedding_model.encode(doc_texts).tolist()
+    qdrant_client.upsert(
+        collection_name=COLLECTION_NAME,
+        points=[
+            models.PointStruct(
+                id=doc["id"],
+                vector=embedding,
+                payload={"text": doc["text"]}
+            )
+            for doc, embedding in zip(mock_documents, doc_embeddings)
+        ]
+    )
+    logger.info("Loaded 5 mock legal documents into in-memory Qdrant RAG.")
+    return embedding_model, qdrant_client, COLLECTION_NAME
+
+rag_runtime = _initialize_rag() if ENV == "local" else None
 
 def retrieve_relevant_context(query: str, top_k: int = 2) -> str:
+    if rag_runtime is None:
+        return ""
     try:
+        embedding_model, qdrant_client, collection_name = rag_runtime
         query_vector = embedding_model.encode(query).tolist()
         response = qdrant_client.query_points(
-            collection_name=COLLECTION_NAME,
+            collection_name=collection_name,
             query=query_vector,
             limit=top_k
         )
@@ -177,9 +184,13 @@ def clean_answer(text: str) -> str:
 @app.post("/ask", response_model=AskResponse)
 def ask(r: Req):
     try:
-        # Retrieve RAG context
-        context_text = retrieve_relevant_context(r.text, top_k=2)
-        system_prompt = BASE_SYSTEM_TEMPLATE.format(context=context_text if context_text else "Жалпы ҚР заңнамасы")
+        if ENV == "local":
+            context_text = retrieve_relevant_context(r.text, top_k=2)
+            system_prompt = BASE_SYSTEM_TEMPLATE.format(
+                context=context_text if context_text else "Жалпы ҚР заңнамасы"
+            )
+        else:
+            system_prompt = BASE_SYSTEM_TEMPLATE.format(context="Контекст из документов не предоставлен.")
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -194,7 +205,8 @@ def ask(r: Req):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": r.text}
             ],
-            "temperature": 0.3
+            "temperature": 0.3,
+            "max_tokens": 600
         }
 
         response = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)

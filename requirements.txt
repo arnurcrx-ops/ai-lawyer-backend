@@ -1,11 +1,8 @@
 fastapi
-uvicorn
-pydantic
-requests
+uvicorn[standard]
 qdrant-client
 sentence-transformers
-torch
-transformers
+requests
+python-dotenv
 SQLAlchemy
 psycopg2-binary
-python-dotenv
